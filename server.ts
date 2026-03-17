@@ -97,14 +97,15 @@ const serveMaintenancePage = (projectId: string, port: number, retry = 0) => {
   maintenanceServers.set(projectId, server);
 };
 
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
+const OperationType = {
+  CREATE: 'create',
+  UPDATE: 'update',
+  DELETE: 'delete',
+  LIST: 'list',
+  GET: 'get',
+  WRITE: 'write',
+};
+type OperationType = typeof OperationType[keyof typeof OperationType];
 
 function handleFirestoreError(error: any, operationType: OperationType, path: string | null) {
   const errInfo = {
@@ -286,7 +287,7 @@ async function startServer() {
     return true;
   };
 
-  const startProject = async (projectId: string) => {
+  const startProject = async (projectId: string, force = false) => {
     if (startingProjects.has(projectId)) {
       console.log(`[Intelligence] Project ${projectId} is already starting. Skipping duplicate call.`);
       return;
@@ -302,6 +303,7 @@ async function startServer() {
     const projectPath = path.join(PROJECTS_DIR, projectId);
 
     if (!fs.existsSync(projectPath)) {
+      startingProjects.delete(projectId);
       throw new Error("Project not found");
     }
 
@@ -312,6 +314,15 @@ async function startServer() {
         kill(p.process.pid, 'SIGKILL');
       }
       activeProjects.delete(projectId);
+    }
+
+    if (force) {
+      console.log(`[Intelligence] Force restart requested for ${projectId}. Clearing node_modules...`);
+      const realRoot = findProjectRoot(projectPath);
+      const nmPath = path.join(realRoot, "node_modules");
+      if (fs.existsSync(nmPath)) {
+        fs.rmSync(nmPath, { recursive: true, force: true });
+      }
     }
 
     // Fetch project data for custom subdomain and main file
@@ -823,6 +834,14 @@ async function startServer() {
       } else {
         console.log(`[Intelligence] Folder not found, skipping fs delete: ${projectPath}`);
       }
+
+      // Delete from Firestore
+      try {
+        await deleteDoc(doc(db, "projects", projectId));
+        console.log(`[Intelligence] Firestore document deleted for ${projectId}`);
+      } catch (e) {
+        console.error(`[Error] Failed to delete Firestore document for ${projectId}:`, e);
+      }
       
       res.json({ success: true });
     } catch (error: any) {
@@ -853,7 +872,8 @@ async function startServer() {
   app.post("/api/start/:projectId", async (req, res) => {
     try {
       const { projectId } = req.params;
-      await startProject(projectId);
+      const { force } = req.body;
+      await startProject(projectId, !!force);
       res.json({ status: "shell_ready" });
     } catch (error: any) {
       res.status(500).json({ error: error.message });

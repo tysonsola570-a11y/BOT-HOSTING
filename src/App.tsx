@@ -198,7 +198,11 @@ function AppContent() {
   const startProject = async (projectId: string) => {
     try {
       await setDoc(doc(db, "projects", projectId), { status: "starting" }, { merge: true });
-      const response = await fetch(`/api/start/${projectId}`, { method: "POST" });
+      const response = await fetch(`/api/start/${projectId}`, { 
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: true })
+      });
       if (!response.ok) throw new Error("Falha ao iniciar");
     } catch (error) {
       console.error("Start Error:", error);
