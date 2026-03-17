@@ -1,0 +1,5 @@
+{
+  "name": "Thayson BOTS Hosting",
+  "description": "Plataforma para hospedar e rodar bots e apps React/Vite a partir de arquivos ZIP com terminal em tempo real.",
+  "requestFramePermissions": []
+}

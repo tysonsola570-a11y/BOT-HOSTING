@@ -1,0 +1,41 @@
+{
+  "entities": {
+    "Project": {
+      "title": "Project",
+      "description": "A bot project uploaded by a user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "type": "string", "enum": ["idle", "starting", "running", "error"] },
+        "port": { "type": "number" },
+        "url": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "publicIp": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "status", "ownerId"]
+    },
+    "Log": {
+      "title": "Log",
+      "description": "A log entry for a project",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string" },
+        "content": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "content", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "Collection of bot projects"
+    },
+    "/projects/{projectId}/logs/{logId}": {
+      "schema": "Log",
+      "description": "Logs for a specific project"
+    }
+  }
+}

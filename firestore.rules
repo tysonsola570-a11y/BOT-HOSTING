@@ -1,0 +1,33 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isProjectOwner(projectId) {
+      return isAuthenticated() && get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid;
+    }
+
+    function isValidProject(data) {
+      return data.keys().hasAll(['id', 'name', 'status', 'ownerId']) &&
+             data.id is string &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.status in ['idle', 'starting', 'running', 'error'] &&
+             data.ownerId == request.auth.uid;
+    }
+
+    match /projects/{projectId} {
+      allow read, write: if true;
+
+      match /logs/{logId} {
+        allow read, write: if true;
+      }
+    }
+  }
+}
