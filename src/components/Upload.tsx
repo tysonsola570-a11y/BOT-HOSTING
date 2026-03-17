@@ -33,7 +33,15 @@ export const Upload: React.FC<UploadProps> = ({ onUploadSuccess, ownerId }) => {
         body: formData
       });
 
-      const data = await response.json();
+      let data;
+      const contentType = response.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
+        data = await response.json();
+      } else {
+        const text = await response.text();
+        throw new Error(`Erro do servidor (${response.status}): ${text.slice(0, 100)}...`);
+      }
+
       if (response.ok) {
         onUploadSuccess(data.projectId);
       } else {

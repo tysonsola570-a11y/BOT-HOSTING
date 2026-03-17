@@ -722,22 +722,37 @@ async function startServer() {
   // API to upload ZIP
   app.post("/api/upload", upload.single("file"), async (req, res) => {
     try {
+      console.log(`[Upload] Received request. Body:`, req.body);
       const { name, ownerId } = req.body;
       const file = req.file;
 
       if (!name || !file || !ownerId) {
+        console.error(`[Upload Error] Missing fields: name=${!!name}, file=${!!file}, ownerId=${!!ownerId}`);
         return res.status(400).json({ error: "Name, ZIP file and Owner ID required" });
       }
 
+      console.log(`[Upload] Processing file: ${file.originalname} (${file.size} bytes)`);
       const projectId = name.replace(/\s+/g, "-").toLowerCase() + "-" + Date.now();
       const projectPath = path.join(PROJECTS_DIR, projectId);
+      
+      if (!fs.existsSync(PROJECTS_DIR)) fs.mkdirSync(PROJECTS_DIR);
       fs.mkdirSync(projectPath);
 
-      const zip = new AdmZip(file.path);
-      zip.extractAllTo(projectPath, true);
+      console.log(`[Upload] Extracting to: ${projectPath}`);
+      try {
+        const zip = new AdmZip(file.path);
+        zip.extractAllTo(projectPath, true);
+      } catch (zipError: any) {
+        console.error(`[Upload Error] Failed to extract ZIP:`, zipError);
+        // Clean up
+        if (fs.existsSync(projectPath)) fs.rmSync(projectPath, { recursive: true, force: true });
+        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        return res.status(400).json({ error: "O arquivo ZIP é inválido ou está corrompido." });
+      }
 
       // Clean up uploaded temp file
-      fs.unlinkSync(file.path);
+      if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+      console.log(`[Upload] Extraction complete. Cleaned up temp file.`);
 
       // Save to Firestore
       try {
@@ -958,6 +973,12 @@ async function startServer() {
     socket.on("join", (terminalId) => {
       socket.join(terminalId);
     });
+  });
+
+  // Global Error Handler
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error("[Global Error]", err);
+    res.status(500).json({ error: "Erro interno no servidor: " + err.message });
   });
 
   httpServer.listen(PORT, "0.0.0.0", () => {
