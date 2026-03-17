@@ -1,6 +1,6 @@
 import React, { useState, useEffect, Component, ErrorInfo, ReactNode } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Terminal as TerminalIcon, Play, ExternalLink, Trash2, Server, Cpu, Globe, Zap, LogIn, LogOut, User, RefreshCw, Copy, Check, ShieldCheck } from "lucide-react";
+import { Terminal as TerminalIcon, Play, ExternalLink, Trash2, Server, Cpu, Globe, Zap, LogIn, LogOut, User, RefreshCw, Copy, Check, ShieldCheck, ShieldAlert } from "lucide-react";
 import { Upload } from "./components/Upload";
 import { Terminal } from "./components/Terminal";
 import { auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged } from "./firebase";
@@ -26,6 +26,8 @@ interface Project {
   publicIp?: string;
   globalUrl?: string;
   framework?: string;
+  customSubdomain?: string;
+  mainFile?: string;
 }
 
 // Error Boundary Component
@@ -77,6 +79,53 @@ function AppContent() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [copiedIp, setCopiedIp] = useState<string | null>(null);
+  const [subdomainInput, setSubdomainInput] = useState("");
+  const [mainFileInput, setMainFileInput] = useState("");
+  const [isSavingSubdomain, setIsSavingSubdomain] = useState(false);
+
+  useEffect(() => {
+    const selectedProject = projects.find(p => p.id === selectedProjectId);
+    if (selectedProject) {
+      setSubdomainInput(selectedProject.customSubdomain || "");
+      setMainFileInput(selectedProject.mainFile || "");
+    }
+  }, [selectedProjectId, projects]);
+
+  const saveSubdomain = async (projectId: string) => {
+    setIsSavingSubdomain(true);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/subdomain`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subdomain: subdomainInput }),
+      });
+      if (!response.ok) throw new Error("Falha ao salvar subdomínio");
+      alert("URL salva com sucesso! Agora clique em 'Ligar Bot' ou 'Reiniciar' para usar o novo link.");
+    } catch (error) {
+      console.error("Subdomain Error:", error);
+      alert("Erro ao salvar subdomínio.");
+    } finally {
+      setIsSavingSubdomain(false);
+    }
+  };
+
+  const saveMainFile = async (projectId: string) => {
+    setIsSavingSubdomain(true);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/mainfile`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mainFile: mainFileInput }),
+      });
+      if (!response.ok) throw new Error("Falha ao salvar arquivo principal");
+      alert("Arquivo principal salvo com sucesso!");
+    } catch (error) {
+      console.error("MainFile Error:", error);
+      alert("Erro ao salvar arquivo principal.");
+    } finally {
+      setIsSavingSubdomain(false);
+    }
+  };
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -149,15 +198,32 @@ function AppContent() {
     } catch (error) {
       console.error("Start Error:", error);
       await setDoc(doc(db, "projects", projectId), { status: "error" }, { merge: true });
+      alert("Erro ao iniciar o bot. Verifique os logs.");
     }
   };
 
   const stopProject = async (projectId: string) => {
     try {
+      // Optimistic update
+      await setDoc(doc(db, "projects", projectId), { status: "stopped" }, { merge: true });
       const response = await fetch(`/api/stop/${projectId}`, { method: "POST" });
       if (!response.ok) throw new Error("Falha ao parar");
+      alert("Bot parado! A página de aviso agora está ativa no seu link.");
     } catch (error) {
       console.error("Stop Error:", error);
+      alert("Erro ao parar o bot.");
+    }
+  };
+
+  const shutdownProject = async (projectId: string) => {
+    try {
+      await setDoc(doc(db, "projects", projectId), { status: "idle" }, { merge: true });
+      const response = await fetch(`/api/shutdown/${projectId}`, { method: "POST" });
+      if (!response.ok) throw new Error("Falha ao desativar");
+      alert("Link desativado com sucesso! O site agora retornará erro ao tentar acessar.");
+    } catch (error) {
+      console.error("Shutdown Error:", error);
+      alert("Erro ao desativar o link.");
     }
   };
 
@@ -173,11 +239,16 @@ function AppContent() {
   };
 
   const deleteProject = async (projectId: string) => {
+    if (!confirm("Tem certeza que deseja excluir este projeto? Isso é irreversível.")) return;
     try {
+      const response = await fetch(`/api/projects/${projectId}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("Falha ao excluir arquivos");
       await deleteDoc(doc(db, "projects", projectId));
       if (selectedProjectId === projectId) setSelectedProjectId(null);
+      alert("Projeto excluído com sucesso!");
     } catch (error) {
       console.error("Delete Error:", error);
+      alert("Erro ao excluir projeto.");
     }
   };
 
@@ -313,10 +384,11 @@ function AppContent() {
                           {project.name}
                         </span>
                       </div>
-                      <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex items-center gap-2">
                         <button
                           onClick={(e) => { e.stopPropagation(); deleteProject(project.id); }}
-                          className="p-1.5 hover:bg-red-500/10 hover:text-red-400 rounded-lg transition-colors"
+                          className="p-1.5 hover:bg-red-500/10 text-zinc-600 hover:text-red-400 rounded-lg transition-colors"
+                          title="Excluir Projeto"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -445,14 +517,26 @@ function AppContent() {
                         )}
                         <div className="flex items-center gap-3 w-full">
                           {projects.find(p => p.id === selectedProjectId)?.status !== "running" ? (
-                            <button
-                              onClick={() => startProject(selectedProjectId)}
-                              disabled={projects.find(p => p.id === selectedProjectId)?.status === "starting"}
-                              className="w-full flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 disabled:bg-zinc-800 text-zinc-950 font-bold px-6 py-3 rounded-2xl transition-all active:scale-95"
-                            >
-                              <Play className="w-5 h-5 fill-current" />
-                              {projects.find(p => p.id === selectedProjectId)?.status === "starting" ? "Iniciando..." : "Ligar Bot"}
-                            </button>
+                            <div className="flex items-center gap-3 w-full">
+                              <button
+                                onClick={() => startProject(selectedProjectId)}
+                                disabled={projects.find(p => p.id === selectedProjectId)?.status === "starting"}
+                                className="flex-1 flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 disabled:bg-zinc-800 text-zinc-950 font-bold px-6 py-3 rounded-2xl transition-all active:scale-95"
+                              >
+                                <Play className="w-5 h-5 fill-current" />
+                                {projects.find(p => p.id === selectedProjectId)?.status === "starting" ? "Iniciando..." : "Ligar Bot"}
+                              </button>
+                              {projects.find(p => p.id === selectedProjectId)?.status === "stopped" && (
+                                <button
+                                  onClick={() => shutdownProject(selectedProjectId)}
+                                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-900 border border-orange-500/20 text-orange-500 hover:text-white hover:bg-orange-500 transition-all"
+                                  title="Fechar Link (Not Found)"
+                                >
+                                  <ShieldAlert className="w-4 h-4" />
+                                  <span className="text-xs font-bold">FECHAR LINK</span>
+                                </button>
+                              )}
+                            </div>
                           ) : (
                             <div className="flex items-center gap-3 w-full">
                               <a
@@ -479,6 +563,14 @@ function AppContent() {
                               >
                                 <LogOut className="w-4 h-4" />
                                 <span className="text-xs font-bold">PARAR</span>
+                              </button>
+                              <button
+                                onClick={() => shutdownProject(selectedProjectId)}
+                                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-900 border border-orange-500/20 text-orange-500 hover:text-white hover:bg-orange-500 transition-all"
+                                title="Fechar Link (Not Found)"
+                              >
+                                <ShieldAlert className="w-4 h-4" />
+                                <span className="text-xs font-bold">FECHAR LINK</span>
                               </button>
                               <button
                                 onClick={async () => {
@@ -508,6 +600,63 @@ function AppContent() {
                             </div>
                           )}
                         </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Settings Grid */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Custom Subdomain Section */}
+                    <div className="bg-zinc-900/50 border border-zinc-900 rounded-3xl p-6 space-y-4">
+                      <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-2">
+                        <Globe className="w-4 h-4 text-emerald-400" />
+                        URL Customizada
+                      </h3>
+                      <div className="flex flex-col gap-3">
+                        <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2 focus-within:border-emerald-500/50 transition-all w-full">
+                          <span className="text-zinc-600 font-mono text-xs">https://</span>
+                          <input
+                            type="text"
+                            value={subdomainInput}
+                            onChange={(e) => setSubdomainInput(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
+                            placeholder="seu-nome"
+                            className="flex-1 bg-transparent border-none outline-none text-white font-mono text-sm px-1"
+                          />
+                          <span className="text-zinc-600 font-mono text-xs">.loca.lt</span>
+                        </div>
+                        <button
+                          onClick={() => saveSubdomain(selectedProjectId!)}
+                          disabled={isSavingSubdomain}
+                          className="w-full bg-zinc-100 hover:bg-white disabled:bg-zinc-800 text-zinc-950 font-bold py-2 rounded-xl transition-all active:scale-95 text-xs"
+                        >
+                          {isSavingSubdomain ? "SALVANDO..." : "SALVAR URL"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Main File Section */}
+                    <div className="bg-zinc-900/50 border border-zinc-900 rounded-3xl p-6 space-y-4">
+                      <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-2">
+                        <TerminalIcon className="w-4 h-4 text-emerald-400" />
+                        Arquivo Principal
+                      </h3>
+                      <div className="flex flex-col gap-3">
+                        <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2 focus-within:border-emerald-500/50 transition-all w-full">
+                          <input
+                            type="text"
+                            value={mainFileInput}
+                            onChange={(e) => setMainFileInput(e.target.value)}
+                            placeholder="ex: bot.py ou server.js"
+                            className="flex-1 bg-transparent border-none outline-none text-white font-mono text-sm"
+                          />
+                        </div>
+                        <button
+                          onClick={() => saveMainFile(selectedProjectId!)}
+                          disabled={isSavingSubdomain}
+                          className="w-full bg-zinc-100 hover:bg-white disabled:bg-zinc-800 text-zinc-950 font-bold py-2 rounded-xl transition-all active:scale-95 text-xs"
+                        >
+                          {isSavingSubdomain ? "SALVANDO..." : "SALVAR ARQUIVO"}
+                        </button>
                       </div>
                     </div>
                   </div>

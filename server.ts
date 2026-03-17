@@ -7,10 +7,11 @@ import fs from "fs";
 import { spawn } from "child_process";
 import AdmZip from "adm-zip";
 import firebaseConfig from "./firebase-applet-config.json";
-import { db, collection, doc, setDoc, addDoc, updateDoc, serverTimestamp } from "./src/firebase";
+import { db, collection, doc, setDoc, addDoc, updateDoc, getDoc, serverTimestamp } from "./src/firebase";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import cors from "cors";
 import localtunnel from "localtunnel";
+import kill from "tree-kill";
 import { GoogleGenAI } from "@google/genai";
 
 const PORT = 3000;
@@ -19,6 +20,72 @@ const PROJECTS_DIR = path.join(process.cwd(), "projects");
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
 
 const proxyTargets = new Map<string, string>();
+const maintenanceServers = new Map<string, any>();
+
+const MAINTENANCE_HTML = `
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Página Desabilitada</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-[#0a0a0a] text-white min-h-screen flex items-center justify-center p-6">
+    <div class="max-w-md w-full bg-[#151515] border border-white/10 rounded-3xl p-8 text-center shadow-2xl">
+        <div class="w-20 h-20 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+        </div>
+        <h1 class="text-2xl font-bold mb-2">Página Desabilitada</h1>
+        <p class="text-gray-400 mb-8">Esta página foi desabilitada pelo desenvolvedor. Se você acredita que isso é um erro, entre em contato.</p>
+        
+        <div class="space-y-4">
+            <a href="https://instagram.com/7p_thayson" target="_blank" class="flex items-center justify-center gap-3 w-full bg-white text-black font-semibold py-3 rounded-xl hover:bg-gray-200 transition-all">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"></path><line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line></svg>
+                Instagram
+            </a>
+            <a href="https://wa.me/14389423427" target="_blank" class="flex items-center justify-center gap-3 w-full bg-[#25D366] text-white font-semibold py-3 rounded-xl hover:opacity-90 transition-all">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 1 1-7.6-14 8.38 8.38 0 0 1 3.8.9L21 3z"></path></svg>
+                WhatsApp
+            </a>
+        </div>
+        
+        <div class="mt-8 pt-8 border-t border-white/5">
+            <p class="text-xs text-gray-500 uppercase tracking-widest">Hospedagem & Suporte</p>
+            <p class="text-sm text-gray-400 mt-1">Problema no seu hosting? Fale conosco.</p>
+        </div>
+    </div>
+</body>
+</html>
+`;
+
+const serveMaintenancePage = (projectId: string, port: number, retry = 0) => {
+  const mApp = express();
+  mApp.get("*", (req, res) => {
+    res.send(MAINTENANCE_HTML);
+  });
+  
+  const server = mApp.listen(port, "0.0.0.0", () => {
+    console.log(`[Maintenance] Serving maintenance page for ${projectId} on port ${port}`);
+  });
+
+  server.on('error', (e: any) => {
+    if (e.code === 'EADDRINUSE' && retry < 5) {
+      console.log(`[Maintenance] Port ${port} busy, retrying in 1s (${retry + 1}/5)...`);
+      setTimeout(() => serveMaintenancePage(projectId, port, retry + 1), 1000);
+    } else {
+      console.error(`[Maintenance] Failed to start server on port ${port}:`, e);
+    }
+  });
+
+  maintenanceServers.set(projectId, server);
+};
 
 enum OperationType {
   CREATE = 'create',
@@ -86,7 +153,7 @@ async function startServer() {
     return dir;
   };
 
-  const detectFramework = (dir: string) => {
+  const detectFramework = (dir: string, mainFile?: string) => {
     const hasFile = (file: string) => fs.existsSync(path.join(dir, file));
     const pkgPath = path.join(dir, "package.json");
     let pkg: any = {};
@@ -108,15 +175,20 @@ async function startServer() {
     if (pkg.dependencies?.astro) return { type: "Astro", cmd: "npm", args: ["run", "dev"] };
     if (pkg.dependencies?.["hexo-cli"]) return { type: "Hexo", cmd: "npx", args: ["hexo", "server", "-p", "$PORT"] };
     
-    // 2. Python (Django, Flask, FastAPI, Streamlit)
+    // 2. Python (Django, Flask, FastAPI, Streamlit, Bot)
     if (hasFile("manage.py")) return { type: "Django", cmd: "python3", args: ["manage.py", "runserver", "0.0.0.0:$PORT"] };
     if (hasFile("requirements.txt")) {
-      const reqs = fs.readFileSync(path.join(dir, "requirements.txt"), "utf8");
+      const reqs = fs.readFileSync(path.join(dir, "requirements.txt"), "utf8").toLowerCase();
       if (reqs.includes("flask")) return { type: "Flask", cmd: "python3", args: ["-m", "flask", "run", "--host=0.0.0.0", "--port=$PORT"] };
       if (reqs.includes("fastapi")) return { type: "FastAPI", cmd: "uvicorn", args: ["main:app", "--host", "0.0.0.0", "--port", "$PORT"] };
-      if (reqs.includes("streamlit")) return { type: "Streamlit", cmd: "streamlit", args: ["run", "app.py", "--server.port", "$PORT"] };
+      if (reqs.includes("streamlit")) return { type: "Streamlit", cmd: "streamlit", args: ["run", mainFile || "app.py", "--server.port", "$PORT"] };
+      if (reqs.includes("discord.py") || reqs.includes("telebot") || reqs.includes("python-telegram-bot")) return { type: "Python Bot", cmd: "python3", args: [mainFile || "bot.py"] };
     }
-    if (hasFile("main.py") || hasFile("app.py")) return { type: "Python", cmd: "python3", args: [hasFile("main.py") ? "main.py" : "app.py"] };
+    
+    if (mainFile && mainFile.endsWith(".py")) return { type: "Python", cmd: "python3", args: [mainFile] };
+    if (hasFile("main.py") || hasFile("app.py") || hasFile("bot.py")) {
+      return { type: "Python", cmd: "python3", args: [mainFile || (hasFile("main.py") ? "main.py" : (hasFile("app.py") ? "app.py" : "bot.py"))] };
+    }
 
     // 3. PHP (Laravel, Symfony, Generic)
     if (hasFile("artisan")) return { type: "Laravel", cmd: "php", args: ["artisan", "serve", "--host=0.0.0.0", "--port=$PORT"] };
@@ -124,7 +196,7 @@ async function startServer() {
     if (hasFile("index.php")) return { type: "PHP", cmd: "php", args: ["-S", "0.0.0.0:$PORT"] };
 
     // 4. Go (Hugo, Gin, Fiber)
-    if (hasFile("go.mod")) return { type: "Go", cmd: "go", args: ["run", "."] };
+    if (hasFile("go.mod")) return { type: "Go", cmd: "go", args: ["run", mainFile || "."] };
     if (hasFile("config.toml") && hasFile("content")) return { type: "Hugo", cmd: "hugo", args: ["server", "--bind", "0.0.0.0", "-p", "$PORT"] };
 
     // 5. Rust (Rocket, Actix)
@@ -137,29 +209,71 @@ async function startServer() {
       if (gemfile.includes("jekyll")) return { type: "Jekyll", cmd: "bundle", args: ["exec", "jekyll", "serve", "--host", "0.0.0.0", "--port", "$PORT"] };
     }
 
-    // 6. Generic Node
+    // 7. Generic Node
+    if (mainFile && (mainFile.endsWith(".js") || mainFile.endsWith(".ts"))) return { type: "Node", cmd: "node", args: [mainFile] };
     if (pkg.scripts?.dev) return { type: "Node (Dev)", cmd: "npm", args: ["run", "dev"] };
-    if (pkg.scripts?.start) return { type: "Node (Start)", cmd: "npm", args: ["npm", "start"] };
+    if (pkg.scripts?.start) return { type: "Node (Start)", cmd: "npm", args: ["start"] };
     if (hasFile("server.js") || hasFile("index.js") || hasFile("app.js")) {
-      return { type: "Node", cmd: "node", args: [hasFile("server.js") ? "server.js" : (hasFile("index.js") ? "index.js" : "app.js")] };
+      return { type: "Node", cmd: "node", args: [mainFile || (hasFile("server.js") ? "server.js" : (hasFile("index.js") ? "index.js" : "app.js"))] };
     }
 
-    // 7. Static
+    // 8. Static
     if (hasFile("index.html")) return { type: "Static", cmd: "npx", args: ["serve", "-p", "$PORT"] };
 
-    return { type: "Unknown", cmd: "node", args: ["index.js"] };
+    return { type: "Unknown", cmd: "node", args: [mainFile || "index.js"] };
   };
 
   const stopProject = async (projectId: string) => {
     const project = activeProjects.get(projectId);
     if (project) {
-      if (project.process) project.process.kill();
-      if (project.tunnel) project.tunnel.close();
-      activeProjects.delete(projectId);
-      await updateDoc(doc(db, "projects", projectId), { status: "stopped", globalUrl: "" });
+      if (project.process && project.process.pid) {
+        console.log(`[Intelligence] Killing process tree for ${projectId} (PID: ${project.process.pid})`);
+        kill(project.process.pid, 'SIGKILL');
+      }
+      
+      // Give it a moment to release the port
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      
+      // Start maintenance server on the same port
+      try {
+        serveMaintenancePage(projectId, project.port);
+      } catch (e) {
+        console.error(`[Error] Failed to start maintenance page for ${projectId}:`, e);
+      }
+      
+      await updateDoc(doc(db, "projects", projectId), { status: "stopped" });
       return true;
     }
     return false;
+  };
+
+  const shutdownProject = async (projectId: string) => {
+    const project = activeProjects.get(projectId);
+    
+    // Kill maintenance server if any
+    if (maintenanceServers.has(projectId)) {
+      maintenanceServers.get(projectId).close();
+      maintenanceServers.delete(projectId);
+    }
+
+    if (project) {
+      if (project.process && project.process.pid) {
+        console.log(`[Intelligence] Shutting down project ${projectId} (PID: ${project.process.pid})`);
+        kill(project.process.pid, 'SIGKILL');
+      }
+      if (project.tunnel) {
+        console.log(`[Intelligence] Closing tunnel for ${projectId}`);
+        project.tunnel.close();
+      }
+      activeProjects.delete(projectId);
+    }
+    
+    await updateDoc(doc(db, "projects", projectId), { 
+      status: "idle", 
+      globalUrl: "", 
+      url: "" 
+    });
+    return true;
   };
 
   const startProject = async (projectId: string) => {
@@ -169,6 +283,12 @@ async function startServer() {
     }
     startingProjects.add(projectId);
 
+    // Kill existing maintenance server if any
+    if (maintenanceServers.has(projectId)) {
+      maintenanceServers.get(projectId).close();
+      maintenanceServers.delete(projectId);
+    }
+
     const projectPath = path.join(PROJECTS_DIR, projectId);
 
     if (!fs.existsSync(projectPath)) {
@@ -177,8 +297,25 @@ async function startServer() {
 
     // Kill existing if any
     if (activeProjects.has(projectId)) {
-      activeProjects.get(projectId)!.process.kill();
+      const p = activeProjects.get(projectId)!;
+      if (p.process && p.process.pid) {
+        kill(p.process.pid, 'SIGKILL');
+      }
       activeProjects.delete(projectId);
+    }
+
+    // Fetch project data for custom subdomain and main file
+    let customSubdomain = "";
+    let mainFile = "";
+    try {
+      const projectDoc = await getDoc(doc(db, "projects", projectId));
+      if (projectDoc.exists()) {
+        const data = projectDoc.data();
+        customSubdomain = data.customSubdomain || "";
+        mainFile = data.mainFile || "";
+      }
+    } catch (e) {
+      console.error("Error fetching project data:", e);
     }
 
     const port = nextPort++;
@@ -320,8 +457,8 @@ async function startServer() {
 
         // Keep-alive timer for long commands (like npm install)
         const keepAlive = setInterval(() => {
-          log(`[Intelligence] Still working on ${cmd}... Please wait.\n`);
-        }, 15000);
+          log(`[Intelligence] Still working on ${cmd}... This can take a few minutes for large projects. Please don't close this page.\n`);
+        }, 10000);
 
         child.stdout.on("data", (data) => log(data.toString()));
         child.stderr.on("data", async (data) => {
@@ -391,13 +528,37 @@ async function startServer() {
         autoFix(realRoot, projectId);
 
         log(`[Intelligence] Step 1: Checking environment and dependencies...\n`);
-        const hasPackageJson = fs.existsSync(path.join(realRoot, "package.json"));
         
+        // Node.js dependencies
+        const hasPackageJson = fs.existsSync(path.join(realRoot, "package.json"));
         if (hasPackageJson) {
           const hasNodeModules = fs.existsSync(path.join(realRoot, "node_modules"));
           if (!hasNodeModules) {
-            log(`[Intelligence] node_modules missing. Running npm install...\n`);
-            await runCommand("npm", ["install"], {}, realRoot);
+            const hasLock = fs.existsSync(path.join(realRoot, "package-lock.json"));
+            if (hasLock) {
+              log(`[Intelligence] package-lock.json detected. Running npm ci (faster install)...\n`);
+              await runCommand("npm", ["ci"], {}, realRoot);
+            } else {
+              log(`[Intelligence] node_modules missing. Running npm install...\n`);
+              await runCommand("npm", ["install"], {}, realRoot);
+            }
+          }
+        }
+
+        // Python dependencies
+        const hasRequirements = fs.existsSync(path.join(realRoot, "requirements.txt"));
+        if (hasRequirements) {
+          log(`[Intelligence] requirements.txt detected. Running pip install...\n`);
+          await runCommand("pip", ["install", "-r", "requirements.txt"], {}, realRoot);
+        }
+
+        // PHP dependencies
+        const hasComposer = fs.existsSync(path.join(realRoot, "composer.json"));
+        if (hasComposer) {
+          const hasVendor = fs.existsSync(path.join(realRoot, "vendor"));
+          if (!hasVendor) {
+            log(`[Intelligence] vendor missing. Running composer install...\n`);
+            await runCommand("composer", ["install"], {}, realRoot);
           }
         }
 
@@ -418,7 +579,8 @@ async function startServer() {
         const setupTunnel = async (targetPort: number): Promise<void> => {
           let retryCount = 0;
           const cleanId = projectId.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20);
-          const subdomain = `thayson-${cleanId}`;
+          const defaultSubdomain = `thayson-${cleanId}`;
+          const subdomain = customSubdomain || defaultSubdomain;
 
           while (retryCount <= 3) {
             try {
@@ -502,7 +664,7 @@ async function startServer() {
 
         await setupTunnel(port);
 
-        const framework = detectFramework(realRoot);
+        const framework = detectFramework(realRoot, mainFile);
         log(`[Intelligence] Detected Framework: ${framework.type}\n`);
         
         const args = framework.args.map(arg => arg.replace("$PORT", port.toString()));
@@ -570,17 +732,71 @@ async function startServer() {
           name,
           status: "idle",
           ownerId,
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          customSubdomain: "" // Initialize empty
         });
       } catch (e) {
         throw handleFirestoreError(e, OperationType.CREATE, `projects/${projectId}`);
       }
 
-      // Automatically start the interactive shell upon upload
-      await startProject(projectId);
-
       res.json({ projectId });
     } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // API to update custom subdomain
+  app.post("/api/projects/:projectId/subdomain", async (req, res) => {
+    const { projectId } = req.params;
+    const { subdomain } = req.body;
+    // Allow empty string to reset to default
+    const finalSubdomain = subdomain || "";
+
+    try {
+      await updateDoc(doc(db, "projects", projectId), { customSubdomain: finalSubdomain });
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // API to update main execution file
+  app.post("/api/projects/:projectId/mainfile", async (req, res) => {
+    const { projectId } = req.params;
+    const { mainFile } = req.body;
+    try {
+      await updateDoc(doc(db, "projects", projectId), { mainFile: mainFile || "" });
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // API to delete project
+  app.delete("/api/projects/:projectId", async (req, res) => {
+    try {
+      const { projectId } = req.params;
+      const projectPath = path.join(PROJECTS_DIR, projectId);
+      
+      console.log(`[Intelligence] Request to delete project: ${projectId}`);
+      
+      // Shutdown first
+      await shutdownProject(projectId);
+      
+      // Give some time for processes to fully release files
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      if (fs.existsSync(projectPath)) {
+        console.log(`[Intelligence] Deleting folder: ${projectPath}`);
+        fs.rmSync(projectPath, { recursive: true, force: true });
+        console.log(`[Intelligence] Folder deleted successfully.`);
+      } else {
+        console.log(`[Intelligence] Folder not found, skipping fs delete: ${projectPath}`);
+      }
+      
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error(`[Error] Failed to delete project ${req.params.projectId}:`, error);
       res.status(500).json({ error: error.message });
     }
   });
@@ -620,6 +836,17 @@ async function startServer() {
       const { projectId } = req.params;
       await stopProject(projectId);
       res.json({ status: "stopped" });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // API to completely shutdown project (close tunnel)
+  app.post("/api/shutdown/:projectId", async (req, res) => {
+    try {
+      const { projectId } = req.params;
+      await shutdownProject(projectId);
+      res.json({ status: "shutdown" });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
