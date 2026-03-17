@@ -171,8 +171,13 @@ function AppContent() {
   const handleLogin = async () => {
     try {
       await signInWithPopup(auth, googleProvider);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Login Error:", error);
+      if (error.code === "auth/unauthorized-domain") {
+        alert("Erro: Domínio não autorizado. Você precisa adicionar 'bot-hosting-1-s5uc.onrender.com' na lista de domínios autorizados no Console do Firebase (Autenticação > Configurações > Domínios Autorizados).");
+      } else {
+        alert("Erro ao fazer login: " + error.message);
+      }
     }
   };
 

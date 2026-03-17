@@ -23,24 +23,23 @@ export const Upload: React.FC<UploadProps> = ({ onUploadSuccess, ownerId }) => {
     setError(null);
 
     try {
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        const base64 = (event.target?.result as string).split(",")[1];
-        const response = await fetch("/api/upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: file.name, zipBase64: base64, ownerId })
-        });
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("name", file.name);
+      formData.append("ownerId", ownerId);
 
-        const data = await response.json();
-        if (response.ok) {
-          onUploadSuccess(data.projectId);
-        } else {
-          setError(data.error || "Erro ao enviar arquivo");
-        }
-        setIsUploading(false);
-      };
-      reader.readAsDataURL(file);
+      const response = await fetch("/api/upload", {
+        method: "POST",
+        body: formData
+      });
+
+      const data = await response.json();
+      if (response.ok) {
+        onUploadSuccess(data.projectId);
+      } else {
+        setError(data.error || "Erro ao enviar arquivo");
+      }
+      setIsUploading(false);
     } catch (err: any) {
       setError(err.message);
       setIsUploading(false);

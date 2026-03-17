@@ -13,9 +13,19 @@ import cors from "cors";
 import localtunnel from "localtunnel";
 import kill from "tree-kill";
 import { GoogleGenAI } from "@google/genai";
+import multer from "multer";
 
 const PORT = 3000;
 const PROJECTS_DIR = path.join(process.cwd(), "projects");
+const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+
+if (!fs.existsSync(PROJECTS_DIR)) fs.mkdirSync(PROJECTS_DIR);
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
+
+const upload = multer({ 
+  dest: UPLOADS_DIR,
+  limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
+});
 
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
 
@@ -710,20 +720,24 @@ async function startServer() {
   });
 
   // API to upload ZIP
-  app.post("/api/upload", async (req, res) => {
+  app.post("/api/upload", upload.single("file"), async (req, res) => {
     try {
-      const { name, zipBase64, ownerId } = req.body;
-      if (!name || !zipBase64 || !ownerId) {
-        return res.status(400).json({ error: "Name, ZIP data and Owner ID required" });
+      const { name, ownerId } = req.body;
+      const file = req.file;
+
+      if (!name || !file || !ownerId) {
+        return res.status(400).json({ error: "Name, ZIP file and Owner ID required" });
       }
 
       const projectId = name.replace(/\s+/g, "-").toLowerCase() + "-" + Date.now();
       const projectPath = path.join(PROJECTS_DIR, projectId);
       fs.mkdirSync(projectPath);
 
-      const zipBuffer = Buffer.from(zipBase64, "base64");
-      const zip = new AdmZip(zipBuffer);
+      const zip = new AdmZip(file.path);
       zip.extractAllTo(projectPath, true);
+
+      // Clean up uploaded temp file
+      fs.unlinkSync(file.path);
 
       // Save to Firestore
       try {
@@ -741,6 +755,7 @@ async function startServer() {
 
       res.json({ projectId });
     } catch (error: any) {
+      console.error("[Upload Error]", error);
       res.status(500).json({ error: error.message });
     }
   });
