@@ -7,7 +7,7 @@ import fs from "fs";
 import { spawn } from "child_process";
 import AdmZip from "adm-zip";
 import firebaseConfig from "./firebase-applet-config.json";
-import { db, collection, doc, setDoc, addDoc, updateDoc, getDoc, serverTimestamp } from "./src/firebase";
+import { db, collection, doc, setDoc, addDoc, updateDoc, getDoc, deleteDoc, query, where, getDocs, serverTimestamp } from "./src/firebase";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import cors from "cors";
 import localtunnel from "localtunnel";
@@ -133,7 +133,7 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
 
   const activeProjects = new Map<string, { port: number; process: any; cwd: string; tunnel?: any; lastCheck?: number }>();
-  const startingProjects = new Set<string>();
+  const startingProjects = new Map<string, number>(); // projectId -> startTime
   let nextPort = 3001;
 
   // Framework Detection Logic
@@ -261,6 +261,9 @@ async function startServer() {
   const shutdownProject = async (projectId: string) => {
     const project = activeProjects.get(projectId);
     
+    // Remove from starting if present
+    startingProjects.delete(projectId);
+
     // Kill maintenance server if any
     if (maintenanceServers.has(projectId)) {
       maintenanceServers.get(projectId).close();
@@ -923,12 +926,45 @@ async function startServer() {
         if (project.process && project.process.exitCode !== null) {
           console.log(`[Watchdog] Project ${projectId} process died. Restarting...`);
           startProject(projectId);
+          continue;
         }
         
         // Check if tunnel is missing but project is supposed to be running
         if (!project.tunnel && !startingProjects.has(projectId)) {
           console.log(`[Watchdog] Project ${projectId} has no tunnel. Restarting...`);
           startProject(projectId);
+          continue;
+        }
+
+        // Health check ping (Local)
+        const target = proxyTargets.get(projectId) || `http://localhost:${project.port}`;
+        try {
+          const res = await fetch(target, { signal: AbortSignal.timeout(5000) });
+          if (!res.ok && res.status >= 500) {
+            console.log(`[Watchdog] Project ${projectId} returned ${res.status}. Restarting...`);
+            startProject(projectId);
+            continue;
+          }
+        } catch (e) {
+          console.log(`[Watchdog] Project ${projectId} local health check failed: ${e}. Restarting...`);
+          startProject(projectId);
+          continue;
+        }
+
+        // Health check ping (Global Tunnel)
+        if (project.tunnel && project.tunnel.url) {
+          try {
+            const res = await fetch(project.tunnel.url, { signal: AbortSignal.timeout(10000) });
+            if (res.status === 503 || res.status === 504) {
+              console.log(`[Watchdog] Project ${projectId} tunnel returned ${res.status}. Restarting tunnel...`);
+              // We just need to restart the project to get a new tunnel
+              startProject(projectId);
+              continue;
+            }
+          } catch (e) {
+            // Tunnel might be down or slow, but if local is fine, we just wait or restart tunnel
+            console.log(`[Watchdog] Project ${projectId} global tunnel check failed: ${e}.`);
+          }
         }
       } catch (e) {
         console.error(`[Watchdog] Error checking project ${projectId}`, e);
@@ -963,7 +999,6 @@ async function startServer() {
     } catch (e) {
       console.error("[Watchdog] Sync Error:", e);
     }
-  }, 30000); // Every 30 seconds
   }, 30000); // Every 30 seconds
 
   // Auto-Resume on Startup

@@ -134,6 +134,7 @@ function AppContent() {
   };
   const [user, setUser] = useState<any>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -195,13 +196,13 @@ function AppContent() {
     setSelectedProjectId(projectId);
   };
 
-  const startProject = async (projectId: string) => {
+  const startProject = async (projectId: string, force = false) => {
     try {
       await setDoc(doc(db, "projects", projectId), { status: "starting" }, { merge: true });
       const response = await fetch(`/api/start/${projectId}`, { 
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force: true })
+        body: JSON.stringify({ force })
       });
       if (!response.ok) throw new Error("Falha ao iniciar");
     } catch (error) {
@@ -247,14 +248,19 @@ function AppContent() {
     }
   };
 
+  const forceReinstall = async (projectId: string) => {
+    if (!confirm("Isso irá apagar a pasta node_modules e reinstalar todas as dependências. Deseja continuar?")) return;
+    await startProject(projectId, true);
+  };
+
   const deleteProject = async (projectId: string) => {
-    if (!confirm("Tem certeza que deseja excluir este projeto? Isso é irreversível.")) return;
     try {
       const response = await fetch(`/api/projects/${projectId}`, { method: "DELETE" });
       if (!response.ok) throw new Error("Falha ao excluir arquivos");
+      // The server already deletes the document, but we can do it here too just in case
       await deleteDoc(doc(db, "projects", projectId));
       if (selectedProjectId === projectId) setSelectedProjectId(null);
-      alert("Projeto excluído com sucesso!");
+      setConfirmDelete(null);
     } catch (error) {
       console.error("Delete Error:", error);
       alert("Erro ao excluir projeto.");
@@ -395,7 +401,7 @@ function AppContent() {
                       </div>
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={(e) => { e.stopPropagation(); deleteProject(project.id); }}
+                          onClick={(e) => { e.stopPropagation(); setConfirmDelete(project.id); }}
                           className="p-1.5 hover:bg-red-500/10 text-zinc-600 hover:text-red-400 rounded-lg transition-colors"
                           title="Excluir Projeto"
                         >
@@ -526,86 +532,67 @@ function AppContent() {
                         )}
                         <div className="flex items-center gap-3 w-full">
                           {projects.find(p => p.id === selectedProjectId)?.status !== "running" ? (
-                            <div className="flex items-center gap-3 w-full">
-                              <button
-                                onClick={() => startProject(selectedProjectId)}
-                                disabled={projects.find(p => p.id === selectedProjectId)?.status === "starting"}
-                                className="flex-1 flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 disabled:bg-zinc-800 text-zinc-950 font-bold px-6 py-3 rounded-2xl transition-all active:scale-95"
-                              >
-                                <Play className="w-5 h-5 fill-current" />
-                                {projects.find(p => p.id === selectedProjectId)?.status === "starting" ? "Iniciando..." : "Ligar Bot"}
-                              </button>
-                              {projects.find(p => p.id === selectedProjectId)?.status === "stopped" && (
+                            <div className="flex flex-col gap-3 w-full">
+                              <div className="flex items-center gap-3 w-full">
                                 <button
-                                  onClick={() => shutdownProject(selectedProjectId)}
-                                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-900 border border-orange-500/20 text-orange-500 hover:text-white hover:bg-orange-500 transition-all"
-                                  title="Fechar Link (Not Found)"
+                                  onClick={() => startProject(selectedProjectId!)}
+                                  disabled={projects.find(p => p.id === selectedProjectId)?.status === "starting"}
+                                  className="flex-1 flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 disabled:bg-zinc-800 text-zinc-950 font-bold px-6 py-3 rounded-2xl transition-all active:scale-95"
                                 >
-                                  <ShieldAlert className="w-4 h-4" />
-                                  <span className="text-xs font-bold">FECHAR LINK</span>
+                                  <Play className="w-5 h-5 fill-current" />
+                                  {projects.find(p => p.id === selectedProjectId)?.status === "starting" ? "Iniciando..." : "Ligar Bot"}
                                 </button>
-                              )}
+                                {projects.find(p => p.id === selectedProjectId)?.status === "stopped" && (
+                                  <button
+                                    onClick={() => shutdownProject(selectedProjectId!)}
+                                    className="flex items-center gap-2 px-4 py-3 rounded-2xl bg-zinc-900 border border-orange-500/20 text-orange-500 hover:text-white hover:bg-orange-500 transition-all"
+                                    title="Fechar Link (Not Found)"
+                                  >
+                                    <ShieldAlert className="w-4 h-4" />
+                                    <span className="text-xs font-bold uppercase tracking-wider">Fechar Link</span>
+                                  </button>
+                                )}
+                              </div>
+                              <button
+                                onClick={() => forceReinstall(selectedProjectId!)}
+                                className="w-full py-2 rounded-xl border border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600 transition-all text-[10px] font-bold uppercase tracking-widest"
+                              >
+                                Forçar Reinstalação de Dependências
+                              </button>
                             </div>
                           ) : (
-                            <div className="flex items-center gap-3 w-full">
-                              <a
-                                href={`/app/${selectedProjectId}/`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="flex-1 flex items-center justify-center gap-2 bg-zinc-100 hover:bg-white text-zinc-950 font-bold px-6 py-3 rounded-2xl transition-all active:scale-95"
-                              >
-                                <ExternalLink className="w-5 h-5" />
-                                ABRIR SITE
-                              </a>
-                              <button
-                                onClick={() => restartProject(selectedProjectId)}
-                                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-all"
-                                title="Reiniciar Bot"
-                              >
-                                <RefreshCw className="w-4 h-4" />
-                                <span className="text-xs font-bold">REINICIAR</span>
-                              </button>
-                              <button
-                                onClick={() => stopProject(selectedProjectId)}
-                                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-900 border border-red-500/20 text-red-500 hover:text-white hover:bg-red-500 transition-all"
-                                title="Parar Bot"
-                              >
-                                <LogOut className="w-4 h-4" />
-                                <span className="text-xs font-bold">PARAR</span>
-                              </button>
-                              <button
-                                onClick={() => shutdownProject(selectedProjectId)}
-                                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-900 border border-orange-500/20 text-orange-500 hover:text-white hover:bg-orange-500 transition-all"
-                                title="Fechar Link (Not Found)"
-                              >
-                                <ShieldAlert className="w-4 h-4" />
-                                <span className="text-xs font-bold">FECHAR LINK</span>
-                              </button>
-                              <button
-                                onClick={async () => {
-                                  try {
-                                    const response = await fetch(`/api/export/${selectedProjectId}`);
-                                    if (!response.ok) throw new Error("Falha ao exportar");
-                                    const blob = await response.blob();
-                                    const url = window.URL.createObjectURL(blob);
-                                    const a = document.createElement("a");
-                                    a.href = url;
-                                    a.download = `${projects.find(p => p.id === selectedProjectId)?.name || "projeto"}.zip`;
-                                    document.body.appendChild(a);
-                                    a.click();
-                                    window.URL.revokeObjectURL(url);
-                                    a.remove();
-                                  } catch (e) {
-                                    console.error(e);
-                                    alert("Erro ao exportar projeto");
-                                  }
-                                }}
-                                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-all"
-                                title="Exportar ZIP"
-                              >
-                                <Copy className="w-4 h-4" />
-                                <span className="text-xs font-bold">ZIP</span>
-                              </button>
+                            <div className="flex flex-col gap-3 w-full">
+                              <div className="flex items-center gap-3 w-full">
+                                <a
+                                  href={`/app/${selectedProjectId}/`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex-1 flex items-center justify-center gap-2 bg-zinc-100 hover:bg-white text-zinc-950 font-bold px-6 py-3 rounded-2xl transition-all active:scale-95"
+                                >
+                                  <ExternalLink className="w-5 h-5" />
+                                  ABRIR SITE
+                                </a>
+                                <button
+                                  onClick={() => restartProject(selectedProjectId!)}
+                                  className="flex items-center gap-2 px-4 py-3 rounded-2xl bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-all"
+                                  title="Reiniciar Bot"
+                                >
+                                  <RefreshCw className="w-4 h-4" />
+                                  <span className="text-xs font-bold uppercase tracking-wider">Reiniciar</span>
+                                </button>
+                                <button
+                                  onClick={() => stopProject(selectedProjectId!)}
+                                  className="flex items-center gap-2 px-4 py-3 rounded-2xl bg-zinc-900 border border-red-500/20 text-red-500 hover:text-white hover:bg-red-500 transition-all"
+                                  title="Parar Bot"
+                                >
+                                  <LogOut className="w-4 h-4" />
+                                  <span className="text-xs font-bold uppercase tracking-wider">Parar</span>
+                                </button>
+                              </div>
+                              <div className="flex items-center justify-center gap-2 py-2 px-4 rounded-xl bg-emerald-500/5 border border-emerald-500/10">
+                                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                                <span className="text-[10px] text-emerald-500/80 font-bold uppercase tracking-widest">Monitoramento de Saúde Ativo</span>
+                              </div>
                             </div>
                           )}
                         </div>
@@ -705,6 +692,32 @@ function AppContent() {
         <p>© 2026 Thayson BOTS Hosting. Todos os direitos reservados.</p>
         <p className="mt-2">Hospedagem de alta performance para bots e aplicações web.</p>
       </footer>
+
+      {/* Custom Confirm Modal */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-8 max-w-md w-full shadow-2xl">
+            <h3 className="text-xl font-medium text-white mb-4">Excluir Projeto?</h3>
+            <p className="text-zinc-400 mb-8">
+              Esta ação é irreversível. Todos os arquivos e dados do projeto serão removidos permanentemente.
+            </p>
+            <div className="flex gap-4">
+              <button
+                onClick={() => setConfirmDelete(null)}
+                className="flex-1 px-6 py-3 rounded-xl bg-zinc-900 text-white hover:bg-zinc-800 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => deleteProject(confirmDelete)}
+                className="flex-1 px-6 py-3 rounded-xl bg-red-600 text-white hover:bg-red-700 transition-colors"
+              >
+                Excluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
