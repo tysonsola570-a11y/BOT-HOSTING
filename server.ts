@@ -292,7 +292,7 @@ async function startServer() {
       console.log(`[Intelligence] Project ${projectId} is already starting. Skipping duplicate call.`);
       return;
     }
-    startingProjects.add(projectId);
+    startingProjects.set(projectId, Date.now());
 
     // Kill existing maintenance server if any
     if (maintenanceServers.has(projectId)) {
@@ -924,10 +924,46 @@ async function startServer() {
           console.log(`[Watchdog] Project ${projectId} process died. Restarting...`);
           startProject(projectId);
         }
+        
+        // Check if tunnel is missing but project is supposed to be running
+        if (!project.tunnel && !startingProjects.has(projectId)) {
+          console.log(`[Watchdog] Project ${projectId} has no tunnel. Restarting...`);
+          startProject(projectId);
+        }
       } catch (e) {
         console.error(`[Watchdog] Error checking project ${projectId}`, e);
       }
     }
+
+    // 2. Check for projects stuck in "starting"
+    const now = Date.now();
+    for (const [projectId, startTime] of startingProjects.entries()) {
+      if (now - startTime > 60000) { // 60 seconds timeout
+        console.log(`[Watchdog] Project ${projectId} stuck in starting for > 60s. Marking as error.`);
+        startingProjects.delete(projectId);
+        try {
+          await updateDoc(doc(db, "projects", projectId), { status: "error" });
+        } catch (e) {
+          console.error(`[Watchdog] Failed to update stuck project ${projectId}:`, e);
+        }
+      }
+    }
+
+    // 3. Sync with Firestore (Resume any that should be running but aren't in memory)
+    try {
+      const q = query(collection(db, "projects"), where("status", "==", "running"));
+      const snapshot = await getDocs(q);
+      for (const docSnap of snapshot.docs) {
+        const id = docSnap.id;
+        if (!activeProjects.has(id) && !startingProjects.has(id)) {
+          console.log(`[Watchdog] Project ${id} should be running but isn't in memory. Resuming...`);
+          startProject(id);
+        }
+      }
+    } catch (e) {
+      console.error("[Watchdog] Sync Error:", e);
+    }
+  }, 30000); // Every 30 seconds
   }, 30000); // Every 30 seconds
 
   // Auto-Resume on Startup
